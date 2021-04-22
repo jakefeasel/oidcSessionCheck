@@ -7,13 +7,15 @@
      * same user authenticated within this app (the OIDC Relying Party).
      * @module SessionCheck
      * @param {Object} config - configation needed for working with the OP
-     * @param {string} config.subject - The user currently logged into the RP
+     * @param {string} [config.subject] - The user currently logged into the RP. Either the subject or the id_token are required
+     * @param {string} [config.id_token] - The first id_token obtained as part of an interactive grant. Either the subject or the id_token are required
+     * @param {string} [config.response_type=id_token] - Response type to use to check the session. Supported options are id_token or none.
      * @param {string} config.clientId - The id of this RP client within the OP
      * @param {string} config.opUrl - Full URL to the OP Authorization Endpoint
      * @param {function} config.invalidSessionHandler - function to be called once any problem with the session is detected
-     * @param {string} config.redirectUri [sessionCheck.html] - The redirect uri registered in the OP for session-checking purposes
-     * @param {number} config.cooldownPeriod [5] - Minimum time (in seconds) between requests to the opUrl
-     * @param {string} config.scope [openid] - Session check scope; can be space-separated list
+     * @param {string} [config.redirectUri=sessionCheck.html] - The redirect uri registered in the OP for session-checking purposes
+     * @param {number} [config.cooldownPeriod=5] - Minimum time (in seconds) between requests to the opUrl
+     * @param {string} [config.scope=openid] - Session check scope; can be space-separated list
      */
     module.exports = function (config) {
         var calculatedUriLink;
@@ -29,11 +31,20 @@
         }
 
         this.subject = config.subject;
+        this.id_token = config.id_token;
         this.clientId = config.clientId;
         this.opUrl = config.opUrl;
+        this.response_type = config.response_type || "id_token";
+
+        if (this.response_type === "none" && !this.id_token) {
+            throw "When using the 'none' response type, you must supply an id_token value to use as a hint when calling the OP.";
+        }
 
         this.cooldownPeriod = config.cooldownPeriod || 5;
-        this.scope = config.scope || "openid";
+
+        if (this.response_type === "id_token") {
+            this.scope = config.scope || "openid";
+        }
 
         /*
          * Attach a hidden iframe onto the main document body that is used to perform
@@ -50,13 +61,20 @@
             if (e.data.message === "sessionCheckFailed" && config.invalidSessionHandler) {
                 config.invalidSessionHandler(e.data.reason);
             }
+
+            // Note that "sessionCheckSucceeded" will only be triggered if using response_type=id_token
             if (e.data.message === "sessionCheckSucceeded" && config.sessionClaimsHandler) {
                 config.sessionClaimsHandler(e.data.claims);
             }
         };
         window.addEventListener("message", this.eventListenerHandle);
 
-        sessionStorage.setItem("sessionCheckSubject", this.subject);
+        if (this.subject) {
+            sessionStorage.setItem("sessionCheckSubject", this.subject);
+        }
+        if (this.id_token) {
+            sessionStorage.setItem("sessionCheckIdToken", this.id_token);
+        }
         return this;
     };
 
@@ -72,12 +90,27 @@
             console.warn("This session check instance has been destroyed");
             return;
         }
-        var nonce = Math.floor(Math.random() * 100000);
-        sessionStorage.setItem("sessionCheckNonce", nonce);
+        var authorizationUrl = config.opUrl + "?prompt=none" +
+                "&client_id="     + config.clientId +
+                "&response_type=" + config.response_type +
+                "&redirect_uri="  + config.redirectUri;
+
+        if (config.response_type === "id_token") {
+            var nonce = Math.floor(Math.random() * 100000);
+            sessionStorage.setItem("sessionCheckNonce", nonce);
+            authorizationUrl += "&nonce=" + nonce;
+        }
+
+        if (config.scope) {
+            authorizationUrl += "&scope=" + config.scope;
+        }
+
+        if (config.id_token) {
+            authorizationUrl += "&id_token_hint=" + config.id_token;
+        }
+
         config.iframe
-            .contentWindow.location.replace(config.opUrl + "?client_id=" + config.clientId +
-                "&response_type=id_token&scope=" + config.scope + "&prompt=none&redirect_uri=" +
-                config.redirectUri + "&nonce=" + nonce);
+            .contentWindow.location.replace(authorizationUrl);
     };
 
     /** @function triggerSessionCheck
